@@ -1,0 +1,17 @@
+# Binários
+server
+client
+*.out
+
+# Objetos
+*.o
+*.obj
+
+# Debug
+*.dSYM/
+
+# macOS
+.DS_Store
+
+# VS Code local
+.vscode/
