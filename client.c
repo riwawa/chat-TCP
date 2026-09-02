@@ -5,6 +5,7 @@
 #include <unistd.h> 
 #include <netinet/in.h> 
 #include <arpa/inet.h> 
+#include <string.h>
 
 int main(){
     int cliente_network;
@@ -27,10 +28,35 @@ int main(){
         exit(EXIT_FAILURE);
     }
     
-    char server_response[256];
-    recv(cliente_network, server_response, sizeof(server_response), 0);
     
-    printf("O servidor mandou: %s\n", server_response);
+    char server_response[256];
+    char buffer[256];
+
+    while(1){
+        
+        ssize_t n = recv(cliente_network, buffer, 255, 0);
+
+        if (n>0){
+            buffer[n] = '\0';
+            printf("Servidor: %s", buffer);
+        } else if (n==0){
+            printf("Servidor desconectou\n");
+            break;
+        } else {
+            printf("Erro no recv\n");
+            break;
+        }
+
+        if (fgets(server_response, sizeof(server_response), stdin) == NULL) {
+            break;
+        }
+
+        ssize_t enviados = send(cliente_network, server_response, strlen(server_response), 0);
+        if (enviados < 0) {
+            printf("Erro no send\n");
+            break;
+        }
+    }
 
     close(cliente_network);
 

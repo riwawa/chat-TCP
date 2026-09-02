@@ -5,6 +5,7 @@
 #include <sys/socket.h> 
 #include <unistd.h> 
 #include <netinet/in.h> 
+#include <string.h>
 
 int main(){
     int servidor_network;
@@ -33,13 +34,36 @@ int main(){
     }
 
     int client_socket = accept(servidor_network,NULL,NULL);
+
     if (client_socket < 0){
     printf("Client socket is negative, couldn't accept");
     exit(EXIT_FAILURE);
     }
+    char server_message[256];
+    char buffer[256];
 
-    char server_message[256] = "Olá, mundo!"; 
-    send(client_socket, server_message, sizeof(server_message), 0);
+    while(1){
+        if (fgets(server_message, sizeof(server_message), stdin) == NULL) {
+            break;
+        }  
+        ssize_t enviados = send(client_socket, server_message, strlen(server_message), 0);
+        ssize_t n = recv(client_socket, buffer, 255, 0);
+
+        if (enviados < 0){
+            printf("ERRO");
+            break;
+        }
+        if (n>0){
+            buffer[n] = '\0';
+            printf("Cliente: %s", buffer);
+        } else if(n==0) {
+            printf("CLIENTE DESCONECTOU");
+            break;
+        } else {
+            printf("Erro");
+            break;
+        }
+    }
 
     close(servidor_network);
     close(client_socket);
