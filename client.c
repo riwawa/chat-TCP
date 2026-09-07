@@ -35,10 +35,14 @@ int main(){
     while(1){
         
         ssize_t n = recv(cliente_network, buffer, 255, 0);
-
+        
         if (n>0){
             buffer[n] = '\0';
-            printf("Servidor: %s", buffer);
+            if (strcmp(buffer, "/quit\n")==0) {
+                break;
+            } else {
+                printf("Servidor: %s", buffer);
+            }
         } else if (n==0){
             printf("Servidor desconectou\n");
             break;

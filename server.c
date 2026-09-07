@@ -55,7 +55,12 @@ int main(){
         }
         if (n>0){
             buffer[n] = '\0';
-            printf("Cliente: %s", buffer);
+            if (strcmp(buffer, "/quit\n") == 0){
+                break;
+            } else {
+                printf("Cliente: %s", buffer);
+
+            }
         } else if(n==0) {
             printf("CLIENTE DESCONECTOU");
             break;
