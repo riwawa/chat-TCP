@@ -36,30 +36,56 @@ int main(){
     int client_socket = accept(servidor_network,NULL,NULL);
 
     if (client_socket < 0){
-    printf("Client socket is negative, couldn't accept");
-    exit(EXIT_FAILURE);
+        printf("Client socket is negative, couldn't accept");
+        exit(EXIT_FAILURE);
     }
     char server_message[256];
-    char buffer[256];
+    char temp[256];
+    char recv_buffer[1024];
+    size_t recv_used = 0;
 
     while(1){
         if (fgets(server_message, sizeof(server_message), stdin) == NULL) {
             break;
         }  
         ssize_t enviados = send(client_socket, server_message, strlen(server_message), 0);
-        ssize_t n = recv(client_socket, buffer, 255, 0);
+        ssize_t n = recv(client_socket, temp, 255, 0);
 
         if (enviados < 0){
             printf("ERRO");
             break;
         }
         if (n>0){
-            buffer[n] = '\0';
-            if (strcmp(buffer, "/quit\n") == 0){
+            if (recv_used + n > sizeof(recv_buffer)) {
+                printf("Buffer cheio\n");
                 break;
-            } else {
-                printf("Cliente: %s", buffer);
+            }
+            memcpy(recv_buffer + recv_used, temp, n);
+            recv_used += n;
 
+            char *newline;
+            while ((newline=memchr(recv_buffer,'\n', recv_used))!=NULL){
+                size_t message_len = newline - recv_buffer + 1;
+                char message[256];
+                if (message_len >= sizeof(message)) {
+                    printf("Mensagem grande demais\n");
+                    break;
+                }
+
+                memcpy(message, recv_buffer, message_len);
+                message[message_len] = '\0';
+
+                if (strcmp(message, "/quit\n")==0){
+                    printf("Cliente encerrou a conexão\n");
+                    close(client_socket);
+                    close(servidor_network);
+                    return 0;
+                }
+                printf("Cliente: %s", message);
+                size_t remaining = recv_used - message_len;
+
+                memmove(recv_buffer, recv_buffer+message_len, remaining);
+                recv_used = remaining;
             }
         } else if(n==0) {
             printf("CLIENTE DESCONECTOU");

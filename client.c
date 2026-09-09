@@ -29,19 +29,49 @@ int main(){
     }
     
     
-    char server_response[256];
-    char buffer[256];
-
+    char user_input[256];
+    char temp[256];
+    char recv_buffer[1024];
+    size_t recv_used = 0;
     while(1){
         
-        ssize_t n = recv(cliente_network, buffer, 255, 0);
-        
+        ssize_t n = recv(cliente_network, temp, sizeof(temp), 0);
+
+            
         if (n>0){
-            buffer[n] = '\0';
-            if (strcmp(buffer, "/quit\n")==0) {
+
+            if (recv_used + n > sizeof(recv_buffer)) {
+                printf("Buffer cheio\n");
                 break;
-            } else {
-                printf("Servidor: %s", buffer);
+            }
+
+            memcpy(recv_buffer + recv_used, temp, n); 
+            recv_used += n;
+
+            char *newline;
+            while ((newline=memchr(recv_buffer,'\n', recv_used)) != NULL) {
+                size_t message_len = newline - recv_buffer + 1;
+                char message[256];
+                if (message_len >= sizeof(message)) {
+                    printf("Mensagem grande demais\n");
+                    break;
+                }
+
+                memcpy(message, recv_buffer, message_len);
+                message[message_len] = '\0';
+
+                if (strcmp(message, "/quit\n") == 0){
+                    printf("Servidor encerrou a conexão\n");
+                    close(cliente_network);
+                    return 0;
+                }
+
+                printf("Servidor: %s", message);
+
+                size_t remaining = recv_used - message_len;
+
+                memmove(recv_buffer, recv_buffer + message_len, remaining);
+                recv_used = remaining;
             }
         } else if (n==0){
             printf("Servidor desconectou\n");
@@ -51,11 +81,11 @@ int main(){
             break;
         }
 
-        if (fgets(server_response, sizeof(server_response), stdin) == NULL) {
+        if (fgets(user_input, sizeof(user_input), stdin) == NULL) {
             break;
         }
 
-        ssize_t enviados = send(cliente_network, server_response, strlen(server_response), 0);
+        ssize_t enviados = send(cliente_network, user_input, strlen(user_input), 0);
         if (enviados < 0) {
             printf("Erro no send\n");
             break;
