@@ -6,28 +6,46 @@
 #include <netinet/in.h> 
 #include <arpa/inet.h> 
 #include <string.h>
+#include "network.h"
+
+int connect_to_server(const char *ip, int port)
+{
+    int fd = create_tcp_socket();
+    if (fd < 0) {
+        return -1;
+    }
+    struct sockaddr_in endereco_servidor = {0};
+
+    endereco_servidor.sin_family = AF_INET;
+    endereco_servidor.sin_port = htons(port);
+
+    if (inet_pton(AF_INET,
+                  ip,
+                  &endereco_servidor.sin_addr) <= 0) {
+
+        close(fd);
+        return -1;
+    }
+
+    if (connect(fd,
+                (struct sockaddr *)&endereco_servidor,
+                sizeof(endereco_servidor)) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
 
 int main(){
-    int cliente_network;
-    cliente_network = socket(AF_INET, SOCK_STREAM, 0);
+    int cliente_network =
+        connect_to_server("127.0.0.1", 9002);
 
     if (cliente_network < 0) {
-        printf("Erro ao criar o socket (Código: %d)\n", cliente_network);
+        printf("Erro ao conectar ao servidor\n");
         exit(EXIT_FAILURE);
     }
 
-    struct sockaddr_in endereco_servidor;
-    endereco_servidor.sin_family = AF_INET;
-    endereco_servidor.sin_port = htons(9002);
-    endereco_servidor.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    int connection_status = connect(cliente_network, (struct sockaddr*) &endereco_servidor, sizeof(endereco_servidor));
-
-    if (connection_status < 0) {
-        printf("Erro ao conectar ao servidor (%d)\n", connection_status);
-        exit(EXIT_FAILURE);
-    }
-    
     
     char user_input[256];
     char temp[256];
@@ -35,11 +53,13 @@ int main(){
     size_t recv_used = 0;
     while(1){
         
-        ssize_t n = recv(cliente_network, temp, sizeof(temp), 0);
-
+        ssize_t n = receive_bytes(
+            cliente_network,
+            temp,
+            sizeof(temp)
+        );
             
         if (n>0){
-
             if (recv_used + n > sizeof(recv_buffer)) {
                 printf("Buffer cheio\n");
                 break;
@@ -85,8 +105,10 @@ int main(){
             break;
         }
 
-        ssize_t enviados = send(cliente_network, user_input, strlen(user_input), 0);
-        if (enviados < 0) {
+        if (send_all(cliente_network,
+                    user_input,
+                    strlen(user_input)) < 0) {
+
             printf("Erro no send\n");
             break;
         }

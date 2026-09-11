@@ -5,75 +5,64 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <string.h>
+#include "network.h"
 
-int send_all(int socket_fd, const char *buffer, size_t length)
+int start_server(int port)
 {
-    size_t total = 0;
+    int server_fd = create_tcp_socket();
 
-    while (total < length) {
-
-        ssize_t n = send(socket_fd,
-                         buffer + total,
-                         length - total,
-                         0);
-
-        if (n <= 0) {
-            return -1;
-        }
-
-        total += n;
-    }
-
-    return 0;
-}
-
-int main()
-{
-    int servidor_network;
-
-    servidor_network = socket(AF_INET, SOCK_STREAM, 0);
-
-    if (servidor_network < 0) {
-        printf("Erro ao criar o socket\n");
-        exit(EXIT_FAILURE);
+    if (server_fd < 0) {
+        return -1;
     }
 
     int opt = 1;
 
-    if (setsockopt(servidor_network,
+    if (setsockopt(server_fd,
                    SOL_SOCKET,
                    SO_REUSEADDR,
                    &opt,
                    sizeof(opt)) < 0) {
 
-        printf("Erro no setsockopt\n");
-        close(servidor_network);
-        exit(EXIT_FAILURE);
+        close(server_fd);
+        return -1;
     }
 
     struct sockaddr_in endereco_servidor = {0};
 
     endereco_servidor.sin_family = AF_INET;
-    endereco_servidor.sin_port = htons(9002);
+    endereco_servidor.sin_port = htons(port);
     endereco_servidor.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    if (bind(servidor_network,
-             (struct sockaddr *) &endereco_servidor,
+    if (bind(server_fd,
+             (struct sockaddr *)&endereco_servidor,
              sizeof(endereco_servidor)) < 0) {
 
-        printf("Binding the socket failed!\n");
-        close(servidor_network);
+        close(server_fd);
+        return -1;
+    }
+
+    if (listen(server_fd, 5) < 0) {
+        close(server_fd);
+        return -1;
+    }
+
+    return server_fd;
+}
+int accept_client(int server_fd)
+{
+    return accept(server_fd, NULL, NULL);
+}
+
+
+int main()
+{
+    int servidor_network = start_server(9002);
+    if (servidor_network < 0) {
+        printf("Erro ao iniciar servidor\n");
         exit(EXIT_FAILURE);
     }
 
-    if (listen(servidor_network, 5) < 0) {
-        printf("Socket listening failed\n");
-        close(servidor_network);
-        exit(EXIT_FAILURE);
-    }
-
-    int client_socket = accept(servidor_network, NULL, NULL);
-
+    int client_socket = accept_client(servidor_network);
     if (client_socket < 0) {
         printf("Couldn't accept client\n");
         close(servidor_network);
@@ -82,12 +71,9 @@ int main()
 
 
     char server_message[256];
-
     char temp[256];
-
     char recv_buffer[1024];
     size_t recv_used = 0;
-
 
     while (1) {
 
