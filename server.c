@@ -1,11 +1,18 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <netinet/in.h>
 #include <string.h>
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+
 #include "network.h"
+#include "framing.h"
+
+#define SERVER_PORT 9002
+#define BACKLOG 5
+#define TEMP_BUFFER_SIZE 256
+#define MESSAGE_SIZE 256
+
 
 int start_server(int port)
 {
@@ -17,13 +24,15 @@ int start_server(int port)
 
     int opt = 1;
 
-    if (setsockopt(server_fd,
-                   SOL_SOCKET,
-                   SO_REUSEADDR,
-                   &opt,
-                   sizeof(opt)) < 0) {
+    if (setsockopt(
+            server_fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &opt,
+            sizeof(opt)
+        ) < 0) {
 
-        close(server_fd);
+        close_connection(server_fd);
         return -1;
     }
 
@@ -31,149 +40,155 @@ int start_server(int port)
 
     endereco_servidor.sin_family = AF_INET;
     endereco_servidor.sin_port = htons(port);
-    endereco_servidor.sin_addr.s_addr = htonl(INADDR_ANY);
+    endereco_servidor.sin_addr.s_addr =
+        htonl(INADDR_ANY);
 
-    if (bind(server_fd,
-             (struct sockaddr *)&endereco_servidor,
-             sizeof(endereco_servidor)) < 0) {
+    if (bind(
+            server_fd,
+            (struct sockaddr *)&endereco_servidor,
+            sizeof(endereco_servidor)
+        ) < 0) {
 
-        close(server_fd);
+        close_connection(server_fd);
         return -1;
     }
 
-    if (listen(server_fd, 5) < 0) {
-        close(server_fd);
+    if (listen(server_fd, BACKLOG) < 0) {
+
+        close_connection(server_fd);
         return -1;
     }
 
     return server_fd;
 }
+
+
 int accept_client(int server_fd)
 {
-    return accept(server_fd, NULL, NULL);
+    return accept(
+        server_fd,
+        NULL,
+        NULL
+    );
 }
 
 
-int main()
+int main(void)
 {
-    int servidor_network = start_server(9002);
-    if (servidor_network < 0) {
+    int server_fd = start_server(SERVER_PORT);
+
+    if (server_fd < 0) {
         printf("Erro ao iniciar servidor\n");
-        exit(EXIT_FAILURE);
+        return EXIT_FAILURE;
     }
 
-    int client_socket = accept_client(servidor_network);
-    if (client_socket < 0) {
-        printf("Couldn't accept client\n");
-        close(servidor_network);
-        exit(EXIT_FAILURE);
+    printf(
+        "Servidor escutando na porta %d...\n",
+        SERVER_PORT
+    );
+
+    int client_fd = accept_client(server_fd);
+
+    if (client_fd < 0) {
+        printf("Erro ao aceitar cliente\n");
+
+        close_connection(server_fd);
+
+        return EXIT_FAILURE;
     }
 
+    printf("Cliente conectado\n");
 
-    char server_message[256];
-    char temp[256];
-    char recv_buffer[1024];
-    size_t recv_used = 0;
+    FrameBuffer frame_buffer = {0};
+
+    char temp[TEMP_BUFFER_SIZE];
+    char message[MESSAGE_SIZE];
 
     while (1) {
 
-        /*
-         * SERVER -> CLIENT
-         */
-
-        if (fgets(server_message,
-                  sizeof(server_message),
-                  stdin) == NULL) {
-            break;
-        }
-
-        if (send_all(client_socket,
-                     server_message,
-                     strlen(server_message)) < 0) {
-
-            printf("Erro ao enviar mensagem\n");
-            break;
-        }
-
-
-        /*
-         * CLIENT -> SERVER
-         */
-
-        ssize_t n = recv(client_socket,
-                         temp,
-                         sizeof(temp),
-                         0);
+        ssize_t n = receive_bytes(
+            client_fd,
+            temp,
+            sizeof(temp)
+        );
 
         if (n > 0) {
-            if (recv_used + (size_t)n > sizeof(recv_buffer)) {
-                printf("Buffer cheio: mensagem sem delimitador muito grande\n");
+
+            if (framing_append(
+                    &frame_buffer,
+                    temp,
+                    (size_t)n
+                ) < 0) {
+
+                printf(
+                    "Erro de framing: "
+                    "buffer cheio\n"
+                );
+
                 break;
             }
 
-            memcpy(recv_buffer + recv_used,
-                   temp,
-                   (size_t)n);
+            while (1) {
 
-            recv_used += (size_t)n;
-            char *newline;
-            while ((newline =
-                    memchr(recv_buffer,
-                           '\n',
-                           recv_used)) != NULL) {
+                int status = framing_extract(
+                    &frame_buffer,
+                    message,
+                    sizeof(message)
+                );
 
-                size_t message_len =
-                    (size_t)(newline - recv_buffer) + 1;
+                if (status < 0) {
 
-                char message[256];
-                if (message_len >= sizeof(message)) {
-                    printf("Mensagem grande demais\n");
-                    close(client_socket);
-                    close(servidor_network);
+                    printf(
+                        "Erro de framing: "
+                        "mensagem grande demais\n"
+                    );
 
-                    return EXIT_FAILURE;
+                    goto cleanup;
                 }
 
-                memcpy(message,
-                       recv_buffer,
-                       message_len);
-
-                message[message_len] = '\0';
-
-
-                if (strcmp(message, "/quit\n") == 0) {
-                    printf("Cliente encerrou a conexão\n");
-                    close(client_socket);
-                    close(servidor_network);
-                    return 0;
+                if (status == 0) {
+                    break;
                 }
-                printf("Cliente: %s", message);
+                if (strcmp(
+                        message,
+                        "/quit\n"
+                    ) == 0) {
 
-                size_t remaining =
-                    recv_used - message_len;
+                    printf(
+                        "Cliente encerrou "
+                        "a conexão\n"
+                    );
 
-                memmove(recv_buffer,
-                        recv_buffer + message_len,
-                        remaining);
+                    goto cleanup;
+                }
 
-                recv_used = remaining;
+                printf(
+                    "Cliente: %s",
+                    message
+                );
             }
-
         }
+
         else if (n == 0) {
-            printf("Cliente desconectou\n");
+            printf(
+                "Cliente desconectou\n"
+            );
             break;
-
         }
+
         else {
-            printf("Erro no recv\n");
+            printf(
+                "Erro ao receber dados\n"
+            );
             break;
         }
     }
 
 
-    close(client_socket);
-    close(servidor_network);
+cleanup:
+
+    close_connection(client_fd);
+    close_connection(server_fd);
 
     return 0;
 }
