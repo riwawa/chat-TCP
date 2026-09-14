@@ -7,6 +7,8 @@
 
 #include "network.h"
 #include "framing.h"
+#include "lexer.h"
+#include "token_debug.h"
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 9002
@@ -116,11 +118,17 @@ int main(void)
                     break;
                 }
 
-                if (strcmp(message, "/quit\n") == 0) {
-                    printf("Servidor encerrou a conexão\n");
-                    close_connection(cliente_network);
-                    return 0;
-                }
+                Lexer lexer;
+                lexer_init(&lexer, message);
+
+                Token token;
+
+                do {
+                    token = lexer_next(&lexer);
+                    print_token(token);
+
+                } while (token.type != TOK_END &&
+                        token.type != TOK_INVALID);
 
                 printf("Servidor: %s", message);
             }

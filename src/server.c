@@ -7,6 +7,8 @@
 
 #include "network.h"
 #include "framing.h"
+#include "lexer.h"
+#include "token_debug.h"
 
 #define SERVER_PORT 9002
 #define BACKLOG 5
@@ -149,19 +151,18 @@ int main(void)
                 if (status == 0) {
                     break;
                 }
-                if (strcmp(
-                        message,
-                        "/quit\n"
-                    ) == 0) {
 
-                    printf(
-                        "Cliente encerrou "
-                        "a conexão\n"
-                    );
+                Lexer lexer;
+                lexer_init(&lexer, message);
 
-                    goto cleanup;
-                }
+                Token token;
 
+                do {
+                    token = lexer_next(&lexer);
+                    print_token(token);
+
+                } while (token.type != TOK_END &&
+                        token.type != TOK_INVALID);
                 printf(
                     "Cliente: %s",
                     message

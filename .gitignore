@@ -2,7 +2,7 @@
 server
 client
 *.out
-
+build/  
 # Objetos
 *.o
 *.obj
