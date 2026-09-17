@@ -4,6 +4,7 @@
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <poll.h>
 
 #include "network.h"
 #include "framing.h"
@@ -42,8 +43,7 @@ int start_server(int port)
 
     endereco_servidor.sin_family = AF_INET;
     endereco_servidor.sin_port = htons(port);
-    endereco_servidor.sin_addr.s_addr =
-        htonl(INADDR_ANY);
+    endereco_servidor.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(
             server_fd,
@@ -89,6 +89,10 @@ int main(void)
         SERVER_PORT
     );
 
+    /*
+     * Por enquanto ainda aceitamos um cliente
+     * antes de entrar no poll.
+     */
     int client_fd = accept_client(server_fd);
 
     if (client_fd < 0) {
@@ -101,6 +105,14 @@ int main(void)
 
     printf("Cliente conectado\n");
 
+    /*
+     * Vamos observar o socket do cliente.
+     */
+    struct pollfd fds[1];
+
+    fds[0].fd = client_fd;
+    fds[0].events = POLLIN;
+
     FrameBuffer frame_buffer = {0};
 
     char temp[TEMP_BUFFER_SIZE];
@@ -108,80 +120,144 @@ int main(void)
 
     while (1) {
 
-        ssize_t n = receive_bytes(
-            client_fd,
-            temp,
-            sizeof(temp)
+        /*
+         * Espera até algum FD observado
+         * ficar pronto.
+         *
+         * Como temos apenas um FD,
+         * esperamos o client_fd.
+         */
+        int ready = poll(
+            fds,
+            1,
+            -1
         );
 
-        if (n > 0) {
+        if (ready < 0) {
+            perror("poll");
+            break;
+        }
 
-            if (framing_append(
-                    &frame_buffer,
-                    temp,
-                    (size_t)n
-                ) < 0) {
+        /*
+         * O cliente tem dados disponíveis
+         * para leitura.
+         */
+        if (fds[0].revents & POLLIN) {
+
+            ssize_t n = receive_bytes(
+                client_fd,
+                temp,
+                sizeof(temp)
+            );
+
+            /*
+             * Recebemos bytes.
+             */
+            if (n > 0) {
+
+                if (framing_append(
+                        &frame_buffer,
+                        temp,
+                        (size_t)n
+                    ) < 0) {
+
+                    printf(
+                        "Erro de framing: "
+                        "buffer cheio\n"
+                    );
+
+                    break;
+                }
+
+                /*
+                 * Um único recv pode trazer
+                 * várias mensagens completas.
+                 */
+                while (1) {
+
+                    int status = framing_extract(
+                        &frame_buffer,
+                        message,
+                        sizeof(message)
+                    );
+
+                    /*
+                     * Erro de framing.
+                     */
+                    if (status < 0) {
+
+                        printf(
+                            "Erro de framing: "
+                            "mensagem grande demais\n"
+                        );
+
+                        goto cleanup;
+                    }
+
+                    /*
+                     * Ainda não temos uma
+                     * mensagem completa.
+                     */
+                    if (status == 0) {
+                        break;
+                    }
+
+                    /*
+                     * Temos uma mensagem completa.
+                     * Agora passamos para o lexer.
+                     */
+                    Lexer lexer;
+                    lexer_init(
+                        &lexer,
+                        message
+                    );
+
+                    Token token;
+
+                    do {
+
+                        token = lexer_next(
+                            &lexer
+                        );
+
+                        print_token(token);
+
+                    } while (
+                        token.type != TOK_END &&
+                        token.type != TOK_INVALID
+                    );
+
+                    printf(
+                        "Cliente: %s",
+                        message
+                    );
+                }
+            }
+
+            /*
+             * recv retornou 0:
+             * cliente fechou a conexão.
+             */
+            else if (n == 0) {
 
                 printf(
-                    "Erro de framing: "
-                    "buffer cheio\n"
+                    "Cliente desconectou\n"
                 );
 
                 break;
             }
 
-            while (1) {
+            /*
+             * recv retornou erro.
+             */
+            else {
 
-                int status = framing_extract(
-                    &frame_buffer,
-                    message,
-                    sizeof(message)
-                );
-
-                if (status < 0) {
-
-                    printf(
-                        "Erro de framing: "
-                        "mensagem grande demais\n"
-                    );
-
-                    goto cleanup;
-                }
-
-                if (status == 0) {
-                    break;
-                }
-
-                Lexer lexer;
-                lexer_init(&lexer, message);
-
-                Token token;
-
-                do {
-                    token = lexer_next(&lexer);
-                    print_token(token);
-
-                } while (token.type != TOK_END &&
-                        token.type != TOK_INVALID);
                 printf(
-                    "Cliente: %s",
-                    message
+                    "Erro ao receber dados\n"
                 );
+
+                break;
             }
-        }
-
-        else if (n == 0) {
-            printf(
-                "Cliente desconectou\n"
-            );
-            break;
-        }
-
-        else {
-            printf(
-                "Erro ao receber dados\n"
-            );
-            break;
         }
     }
 
