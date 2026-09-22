@@ -8,6 +8,7 @@ COMMON_SRC = \
 	$(SRC_DIR)/network.c \
 	$(SRC_DIR)/framing.c \
 	$(SRC_DIR)/lexer.c \
+	$(SRC_DIR)/parser.c \
 	$(SRC_DIR)/token_debug.c
 
 SERVER_SRC = $(SRC_DIR)/server.c $(COMMON_SRC)

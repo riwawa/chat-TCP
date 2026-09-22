@@ -9,7 +9,7 @@
 #include "network.h"
 #include "framing.h"
 #include "lexer.h"
-#include "token_debug.h"
+#include "parser.h"
 #include "client.h"
 
 #define SERVER_PORT 9002
@@ -81,8 +81,12 @@ int accept_client(int server_fd)
 void init_clients(Client clients[])
 {
     for (int i = 0; i < MAX_CLIENTS; i++) {
+
         clients[i].fd = -1;
         clients[i].frame_buffer.used = 0;
+
+        clients[i].username[0] = '\0';
+        clients[i].authenticated = 0;
     }
 }
 
@@ -120,10 +124,14 @@ int add_client(
             clients[i].fd = new_client_fd;
             clients[i].frame_buffer.used = 0;
 
+            clients[i].username[0] = '\0';
+            clients[i].authenticated = 0;
+
             int poll_index = i + 1;
 
             fds[poll_index].fd = new_client_fd;
             fds[poll_index].events = POLLIN;
+            fds[poll_index].revents = 0;
 
             return i;
         }
@@ -140,6 +148,7 @@ void remove_client(
 )
 {
     if (clients[client_index].fd != -1) {
+
         close_connection(
             clients[client_index].fd
         );
@@ -147,6 +156,9 @@ void remove_client(
 
     clients[client_index].fd = -1;
     clients[client_index].frame_buffer.used = 0;
+
+    clients[client_index].username[0] = '\0';
+    clients[client_index].authenticated = 0;
 
     int poll_index = client_index + 1;
 
@@ -156,38 +168,184 @@ void remove_client(
 }
 
 
-void process_message(
-    Client *client,
-    char *message
+void broadcast_message(
+    Client clients[],
+    int sender_index,
+    const char *message
 )
 {
-    Lexer lexer;
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].fd == -1) {
+            continue;
+        }
 
-    lexer_init(
-        &lexer,
-        message
+        if (i == sender_index) {
+            continue;
+        }
+
+        if (send_all(
+                clients[i].fd,
+                message,
+                strlen(message)
+            ) < 0) {
+
+            printf(
+                "Erro no broadcast para fd=%d\n",
+                clients[i].fd
+            );
+        }
+    }
+}
+
+
+int set_username(
+    Client *client,
+    const char *username,
+    size_t username_length
+)
+{
+    if (username == NULL || username_length == 0) {
+        return -1;
+    }
+
+    if (username_length >= sizeof(client->username)) {
+        return -1;
+    }
+
+    memcpy(
+        client->username,
+        username,
+        username_length
     );
 
-    Token token;
+    client->username[username_length] = '\0';
 
-    do {
+    client->authenticated = 1;
 
-        token = lexer_next(
-            &lexer
-        );
+    return 0;
+}
 
-        print_token(token);
 
-    } while (
-        token.type != TOK_END &&
-        token.type != TOK_INVALID
-    );
+void process_command(
+    Client clients[],
+    struct pollfd fds[],
+    int client_index,
+    Command command,
+    const char *original_message
+)
+{
+    Client *client =
+        &clients[client_index];
 
-    printf(
-        "Cliente fd=%d: %s",
-        client->fd,
-        message
-    );
+    switch (command.type) {
+        case CMD_TEXT:
+
+            if (!client->authenticated) {
+
+                const char *error =
+                    "Defina seu username com /name <nome>\n";
+
+                send_all(
+                    client->fd,
+                    error,
+                    strlen(error)
+                );
+
+                return;
+            }
+
+            printf(
+                "%s: %s",
+                client->username,
+                original_message
+            );
+
+            broadcast_message(
+                clients,
+                client_index,
+                original_message
+            );
+
+            break;
+
+
+        /*
+         * ----------------------------
+         * /name <username>
+         * ----------------------------
+         */
+        case CMD_NAME:
+
+            if (set_username(
+                    client,
+                    command.argument,
+                    command.argument_length
+                ) < 0) {
+
+                const char *error =
+                    "Username invalido\n";
+
+                send_all(
+                    client->fd,
+                    error,
+                    strlen(error)
+                );
+
+                return;
+            }
+
+            printf(
+                "Cliente fd=%d agora e '%s'\n",
+                client->fd,
+                client->username
+            );
+
+            break;
+
+
+        /*
+         * ----------------------------
+         * /quit
+         * ----------------------------
+         */
+        case CMD_QUIT:
+
+            printf(
+                "Cliente '%s' solicitou /quit\n",
+                client->authenticated
+                    ? client->username
+                    : "(sem nome)"
+            );
+
+            remove_client(
+                clients,
+                fds,
+                client_index
+            );
+
+            break;
+
+
+        /*
+         * ----------------------------
+         * COMANDO INVALIDO
+         * ----------------------------
+         */
+        case CMD_INVALID:
+
+            {
+                const char *error =
+                    "Comando invalido\n";
+
+                send_all(
+                    client->fd,
+                    error,
+                    strlen(error)
+                );
+            }
+
+            break;
+    }
 }
 
 
@@ -209,6 +367,11 @@ int handle_client_data(
         sizeof(temp)
     );
 
+    /*
+     * =====================================
+     * DADOS RECEBIDOS
+     * =====================================
+     */
     if (n > 0) {
 
         if (framing_append(
@@ -231,6 +394,11 @@ int handle_client_data(
 
             return -1;
         }
+
+        /*
+         * Um único recv() pode conter
+         * zero, uma ou várias mensagens.
+         */
         while (1) {
 
             int status = framing_extract(
@@ -256,18 +424,42 @@ int handle_client_data(
                 return -1;
             }
 
+            /*
+             * Ainda não existe frame completo.
+             */
             if (status == 0) {
                 break;
             }
 
-            process_message(
-                client,
+        
+            Lexer lexer;
+
+            lexer_init(
+                &lexer,
                 message
             );
+
+            Command command =
+                parse_command(
+                    &lexer
+                );
+
+            process_command(
+                clients,
+                fds,
+                client_index,
+                command,
+                message
+            );
+
+            if (clients[client_index].fd == -1) {
+                return 0;
+            }
         }
 
         return 0;
     }
+
 
     if (n == 0) {
 
@@ -324,6 +516,7 @@ int main(void)
     );
 
     Client clients[MAX_CLIENTS];
+
     struct pollfd fds[
         MAX_CLIENTS + 1
     ];
@@ -350,6 +543,7 @@ int main(void)
             break;
         }
 
+
         if (fds[0].revents & POLLIN) {
 
             int new_client_fd =
@@ -370,7 +564,6 @@ int main(void)
                         new_client_fd
                     );
 
-                
                 if (client_index < 0) {
 
                     printf(
@@ -390,39 +583,33 @@ int main(void)
                         new_client_fd,
                         client_index
                     );
+
+                    const char *welcome =
+                        "Escolha seu username com "
+                        "/name <nome>\n";
+
+                    send_all(
+                        new_client_fd,
+                        welcome,
+                        strlen(welcome)
+                    );
                 }
             }
         }
 
-        /*
-         * --------------------------------
-         * CLIENTES EXISTENTES
-         * --------------------------------
-         */
         for (
             int i = 0;
             i < MAX_CLIENTS;
             i++
         ) {
 
-            /*
-             * Esse slot não possui cliente.
-             */
             if (clients[i].fd == -1) {
                 continue;
             }
 
-            /*
-             * clients[i]
-             * corresponde a
-             * fds[i + 1].
-             */
-            int poll_index = i + 1;
+            int poll_index =
+                i + 1;
 
-            /*
-             * Esse cliente não tem
-             * dados disponíveis agora.
-             */
             if (!(
                 fds[poll_index].revents
                 & POLLIN
@@ -438,7 +625,6 @@ int main(void)
         }
     }
 
-
     for (
         int i = 0;
         i < MAX_CLIENTS;
@@ -453,7 +639,9 @@ int main(void)
         }
     }
 
-    close_connection(server_fd);
+    close_connection(
+        server_fd
+    );
 
     return 0;
 }
