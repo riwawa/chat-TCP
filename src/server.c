@@ -10,11 +10,15 @@
 #include "framing.h"
 #include "lexer.h"
 #include "token_debug.h"
+#include "client.h"
 
 #define SERVER_PORT 9002
 #define BACKLOG 5
+
 #define TEMP_BUFFER_SIZE 256
 #define MESSAGE_SIZE 256
+
+#define MAX_CLIENTS 10
 
 
 int start_server(int port)
@@ -56,7 +60,6 @@ int start_server(int port)
     }
 
     if (listen(server_fd, BACKLOG) < 0) {
-
         close_connection(server_fd);
         return -1;
     }
@@ -75,196 +78,381 @@ int accept_client(int server_fd)
 }
 
 
-int main(void)
+void init_clients(Client clients[])
 {
-    int server_fd = start_server(SERVER_PORT);
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        clients[i].fd = -1;
+        clients[i].frame_buffer.used = 0;
+    }
+}
 
-    if (server_fd < 0) {
-        printf("Erro ao iniciar servidor\n");
-        return EXIT_FAILURE;
+
+void init_pollfds(
+    struct pollfd fds[],
+    int server_fd
+)
+{
+    fds[0].fd = server_fd;
+    fds[0].events = POLLIN;
+    fds[0].revents = 0;
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        int poll_index = i + 1;
+
+        fds[poll_index].fd = -1;
+        fds[poll_index].events = POLLIN;
+        fds[poll_index].revents = 0;
+    }
+}
+
+
+int add_client(
+    Client clients[],
+    struct pollfd fds[],
+    int new_client_fd
+)
+{
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+
+        if (clients[i].fd == -1) {
+
+            clients[i].fd = new_client_fd;
+            clients[i].frame_buffer.used = 0;
+
+            int poll_index = i + 1;
+
+            fds[poll_index].fd = new_client_fd;
+            fds[poll_index].events = POLLIN;
+
+            return i;
+        }
     }
 
-    printf(
-        "Servidor escutando na porta %d...\n",
-        SERVER_PORT
+    return -1;
+}
+
+
+void remove_client(
+    Client clients[],
+    struct pollfd fds[],
+    int client_index
+)
+{
+    if (clients[client_index].fd != -1) {
+        close_connection(
+            clients[client_index].fd
+        );
+    }
+
+    clients[client_index].fd = -1;
+    clients[client_index].frame_buffer.used = 0;
+
+    int poll_index = client_index + 1;
+
+    fds[poll_index].fd = -1;
+    fds[poll_index].events = POLLIN;
+    fds[poll_index].revents = 0;
+}
+
+
+void process_message(
+    Client *client,
+    char *message
+)
+{
+    Lexer lexer;
+
+    lexer_init(
+        &lexer,
+        message
     );
 
-    /*
-     * Por enquanto ainda aceitamos um cliente
-     * antes de entrar no poll.
-     */
-    int client_fd = accept_client(server_fd);
+    Token token;
 
-    if (client_fd < 0) {
-        printf("Erro ao aceitar cliente\n");
+    do {
 
-        close_connection(server_fd);
+        token = lexer_next(
+            &lexer
+        );
 
-        return EXIT_FAILURE;
-    }
+        print_token(token);
 
-    printf("Cliente conectado\n");
+    } while (
+        token.type != TOK_END &&
+        token.type != TOK_INVALID
+    );
 
-    /*
-     * Vamos observar o socket do cliente.
-     */
-    struct pollfd fds[1];
+    printf(
+        "Cliente fd=%d: %s",
+        client->fd,
+        message
+    );
+}
 
-    fds[0].fd = client_fd;
-    fds[0].events = POLLIN;
 
-    FrameBuffer frame_buffer = {0};
+int handle_client_data(
+    Client clients[],
+    struct pollfd fds[],
+    int client_index
+)
+{
+    Client *client =
+        &clients[client_index];
 
     char temp[TEMP_BUFFER_SIZE];
     char message[MESSAGE_SIZE];
 
+    ssize_t n = receive_bytes(
+        client->fd,
+        temp,
+        sizeof(temp)
+    );
+
+    if (n > 0) {
+
+        if (framing_append(
+                &client->frame_buffer,
+                temp,
+                (size_t)n
+            ) < 0) {
+
+            printf(
+                "Erro de framing no cliente "
+                "fd=%d: buffer cheio\n",
+                client->fd
+            );
+
+            remove_client(
+                clients,
+                fds,
+                client_index
+            );
+
+            return -1;
+        }
+        while (1) {
+
+            int status = framing_extract(
+                &client->frame_buffer,
+                message,
+                sizeof(message)
+            );
+
+            if (status < 0) {
+
+                printf(
+                    "Erro de framing no cliente "
+                    "fd=%d\n",
+                    client->fd
+                );
+
+                remove_client(
+                    clients,
+                    fds,
+                    client_index
+                );
+
+                return -1;
+            }
+
+            if (status == 0) {
+                break;
+            }
+
+            process_message(
+                client,
+                message
+            );
+        }
+
+        return 0;
+    }
+
+    if (n == 0) {
+
+        printf(
+            "Cliente fd=%d desconectou\n",
+            client->fd
+        );
+
+        remove_client(
+            clients,
+            fds,
+            client_index
+        );
+
+        return 0;
+    }
+
+    printf(
+        "Erro ao receber dados "
+        "do cliente fd=%d\n",
+        client->fd
+    );
+
+    remove_client(
+        clients,
+        fds,
+        client_index
+    );
+
+    return -1;
+}
+
+
+int main(void)
+{
+    int server_fd =
+        start_server(
+            SERVER_PORT
+        );
+
+    if (server_fd < 0) {
+
+        printf(
+            "Erro ao iniciar servidor\n"
+        );
+
+        return EXIT_FAILURE;
+    }
+
+    printf(
+        "Servidor escutando "
+        "na porta %d...\n",
+        SERVER_PORT
+    );
+
+    Client clients[MAX_CLIENTS];
+    struct pollfd fds[
+        MAX_CLIENTS + 1
+    ];
+
+    init_clients(clients);
+
+    init_pollfds(
+        fds,
+        server_fd
+    );
+
+
     while (1) {
 
-        /*
-         * Espera até algum FD observado
-         * ficar pronto.
-         *
-         * Como temos apenas um FD,
-         * esperamos o client_fd.
-         */
         int ready = poll(
             fds,
-            1,
+            MAX_CLIENTS + 1,
             -1
         );
 
         if (ready < 0) {
+
             perror("poll");
             break;
         }
 
-        /*
-         * O cliente tem dados disponíveis
-         * para leitura.
-         */
         if (fds[0].revents & POLLIN) {
 
-            ssize_t n = receive_bytes(
-                client_fd,
-                temp,
-                sizeof(temp)
+            int new_client_fd =
+                accept_client(
+                    server_fd
+                );
+
+            if (new_client_fd < 0) {
+
+                perror("accept");
+
+            } else {
+
+                int client_index =
+                    add_client(
+                        clients,
+                        fds,
+                        new_client_fd
+                    );
+
+                
+                if (client_index < 0) {
+
+                    printf(
+                        "Servidor cheio. "
+                        "Conexão recusada.\n"
+                    );
+
+                    close_connection(
+                        new_client_fd
+                    );
+
+                } else {
+
+                    printf(
+                        "Novo cliente conectado: "
+                        "fd=%d index=%d\n",
+                        new_client_fd,
+                        client_index
+                    );
+                }
+            }
+        }
+
+        /*
+         * --------------------------------
+         * CLIENTES EXISTENTES
+         * --------------------------------
+         */
+        for (
+            int i = 0;
+            i < MAX_CLIENTS;
+            i++
+        ) {
+
+            /*
+             * Esse slot não possui cliente.
+             */
+            if (clients[i].fd == -1) {
+                continue;
+            }
+
+            /*
+             * clients[i]
+             * corresponde a
+             * fds[i + 1].
+             */
+            int poll_index = i + 1;
+
+            /*
+             * Esse cliente não tem
+             * dados disponíveis agora.
+             */
+            if (!(
+                fds[poll_index].revents
+                & POLLIN
+            )) {
+                continue;
+            }
+
+            handle_client_data(
+                clients,
+                fds,
+                i
             );
-
-            /*
-             * Recebemos bytes.
-             */
-            if (n > 0) {
-
-                if (framing_append(
-                        &frame_buffer,
-                        temp,
-                        (size_t)n
-                    ) < 0) {
-
-                    printf(
-                        "Erro de framing: "
-                        "buffer cheio\n"
-                    );
-
-                    break;
-                }
-
-                /*
-                 * Um único recv pode trazer
-                 * várias mensagens completas.
-                 */
-                while (1) {
-
-                    int status = framing_extract(
-                        &frame_buffer,
-                        message,
-                        sizeof(message)
-                    );
-
-                    /*
-                     * Erro de framing.
-                     */
-                    if (status < 0) {
-
-                        printf(
-                            "Erro de framing: "
-                            "mensagem grande demais\n"
-                        );
-
-                        goto cleanup;
-                    }
-
-                    /*
-                     * Ainda não temos uma
-                     * mensagem completa.
-                     */
-                    if (status == 0) {
-                        break;
-                    }
-
-                    /*
-                     * Temos uma mensagem completa.
-                     * Agora passamos para o lexer.
-                     */
-                    Lexer lexer;
-                    lexer_init(
-                        &lexer,
-                        message
-                    );
-
-                    Token token;
-
-                    do {
-
-                        token = lexer_next(
-                            &lexer
-                        );
-
-                        print_token(token);
-
-                    } while (
-                        token.type != TOK_END &&
-                        token.type != TOK_INVALID
-                    );
-
-                    printf(
-                        "Cliente: %s",
-                        message
-                    );
-                }
-            }
-
-            /*
-             * recv retornou 0:
-             * cliente fechou a conexão.
-             */
-            else if (n == 0) {
-
-                printf(
-                    "Cliente desconectou\n"
-                );
-
-                break;
-            }
-
-            /*
-             * recv retornou erro.
-             */
-            else {
-
-                printf(
-                    "Erro ao receber dados\n"
-                );
-
-                break;
-            }
         }
     }
 
 
-cleanup:
+    for (
+        int i = 0;
+        i < MAX_CLIENTS;
+        i++
+    ) {
 
-    close_connection(client_fd);
+        if (clients[i].fd != -1) {
+
+            close_connection(
+                clients[i].fd
+            );
+        }
+    }
+
     close_connection(server_fd);
 
     return 0;
