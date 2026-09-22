@@ -1,33 +1,41 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <string.h>
-
-#include "network.h"
-#include "framing.h"
-#include "lexer.h"
-#include "token_debug.h"
-
 #include <poll.h>
 #include <unistd.h>
 
+#include "network.h"
+#include "framing.h"
+
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 9002
+
 #define TEMP_BUFFER_SIZE 256
 #define MESSAGE_SIZE 256
 
-void setup_pollfds(struct pollfd fds[], int socket_fd)
+
+void setup_pollfds(
+    struct pollfd fds[],
+    int socket_fd
+)
 {
     fds[0].fd = STDIN_FILENO;
     fds[0].events = POLLIN;
-
+    fds[0].revents = 0;
     fds[1].fd = socket_fd;
     fds[1].events = POLLIN;
+    fds[1].revents = 0;
 }
 
-int connect_to_server(const char *ip, int port)
+
+int connect_to_server(
+    const char *ip,
+    int port
+)
 {
     int fd = create_tcp_socket();
 
@@ -35,15 +43,15 @@ int connect_to_server(const char *ip, int port)
         return -1;
     }
 
-    struct sockaddr_in endereco_servidor = {0};
+    struct sockaddr_in server_address = {0};
 
-    endereco_servidor.sin_family = AF_INET;
-    endereco_servidor.sin_port = htons(port);
+    server_address.sin_family = AF_INET;
+    server_address.sin_port = htons(port);
 
     if (inet_pton(
             AF_INET,
             ip,
-            &endereco_servidor.sin_addr
+            &server_address.sin_addr
         ) <= 0) {
 
         close_connection(fd);
@@ -52,8 +60,8 @@ int connect_to_server(const char *ip, int port)
 
     if (connect(
             fd,
-            (struct sockaddr *)&endereco_servidor,
-            sizeof(endereco_servidor)
+            (struct sockaddr *)&server_address,
+            sizeof(server_address)
         ) < 0) {
 
         close_connection(fd);
@@ -66,19 +74,32 @@ int connect_to_server(const char *ip, int port)
 
 int main(void)
 {
-    int cliente_network = connect_to_server(
+    int server_fd = connect_to_server(
         SERVER_IP,
         SERVER_PORT
     );
 
-    if (cliente_network < 0) {
-        printf("Erro ao conectar ao servidor\n");
+    if (server_fd < 0) {
+
+        printf(
+            "Erro ao conectar ao servidor\n"
+        );
+
         return EXIT_FAILURE;
     }
 
+    printf(
+        "Conectado ao servidor %s:%d\n",
+        SERVER_IP,
+        SERVER_PORT
+    );
+
     struct pollfd fds[2];
 
-    setup_pollfds(fds, cliente_network);
+    setup_pollfds(
+        fds,
+        server_fd
+    );
 
 
     char user_input[MESSAGE_SIZE];
@@ -87,19 +108,20 @@ int main(void)
 
     FrameBuffer frame_buffer = {0};
 
-    while (1) {
 
-        int ready = poll(fds, 2, -1);
+    while (1) {
+        int ready = poll(
+            fds,
+            2,
+            -1
+        );
 
         if (ready < 0) {
+
             perror("poll");
             break;
         }
 
-        /*
-        * CLIENT -> SERVER
-        * teclado pronto
-        */
         if (fds[0].revents & POLLIN) {
 
             if (fgets(
@@ -108,54 +130,65 @@ int main(void)
                     stdin
                 ) == NULL) {
 
+                printf(
+                    "Entrada encerrada\n"
+                );
+
                 break;
             }
 
             if (send_all(
-                    cliente_network,
+                    server_fd,
                     user_input,
                     strlen(user_input)
                 ) < 0) {
 
-                printf("Erro no send\n");
+                printf(
+                    "Erro ao enviar mensagem\n"
+                );
+
                 break;
             }
         }
 
-        /*
-        * SERVER -> CLIENT
-        * socket pronto
-        */
         if (fds[1].revents & POLLIN) {
 
             ssize_t n = receive_bytes(
-                cliente_network,
+                server_fd,
                 temp,
                 sizeof(temp)
             );
 
             if (n > 0) {
-
                 if (framing_append(
                         &frame_buffer,
                         temp,
                         (size_t)n
                     ) < 0) {
 
-                    printf("Erro de framing\n");
+                    printf(
+                        "Erro de framing: "
+                        "buffer cheio\n"
+                    );
+
                     break;
                 }
 
                 while (1) {
 
-                    int status = framing_extract(
-                        &frame_buffer,
-                        message,
-                        sizeof(message)
-                    );
+                    int status =
+                        framing_extract(
+                            &frame_buffer,
+                            message,
+                            sizeof(message)
+                        );
 
                     if (status < 0) {
-                        printf("Erro ao extrair mensagem\n");
+
+                        printf(
+                            "Erro ao extrair mensagem\n"
+                        );
+
                         break;
                     }
 
@@ -163,41 +196,49 @@ int main(void)
                         break;
                     }
 
-                    /*
-                    * FRAMING terminou.
-                    * Agora temos uma mensagem completa.
-                    */
 
-                    Lexer lexer;
-                    lexer_init(&lexer, message);
 
-                    Token token;
-
-                    do {
-                        token = lexer_next(&lexer);
-                        print_token(token);
-
-                    } while (
-                        token.type != TOK_END &&
-                        token.type != TOK_INVALID
+                    printf(
+                        "%s",
+                        message
                     );
-
-                    printf("Servidor: %s", message);
                 }
             }
 
+
+            /*
+             * recv() == 0
+             *
+             * O servidor fechou a conexão.
+             */
             else if (n == 0) {
-                printf("Servidor desconectou\n");
+
+                printf(
+                    "Servidor desconectou\n"
+                );
+
                 break;
             }
 
+
+            /*
+             * recv() < 0
+             */
             else {
-                printf("Erro no recv\n");
+
+                printf(
+                    "Erro ao receber dados\n"
+                );
+
                 break;
             }
         }
     }
-    close_connection(cliente_network);
+
+
+    close_connection(
+        server_fd
+    );
 
     return 0;
 }
