@@ -4,15 +4,19 @@ CFLAGS = -Wall -Wextra -Wpedantic -Iinclude
 SRC_DIR = src
 BUILD_DIR = build
 
-COMMON_SRC = \
+SERVER_SRC = \
+	$(SRC_DIR)/server.c \
 	$(SRC_DIR)/network.c \
 	$(SRC_DIR)/framing.c \
 	$(SRC_DIR)/lexer.c \
 	$(SRC_DIR)/parser.c \
 	$(SRC_DIR)/token_debug.c
 
-SERVER_SRC = $(SRC_DIR)/server.c $(COMMON_SRC)
-CLIENT_SRC = $(SRC_DIR)/client.c $(COMMON_SRC)
+CLIENT_SRC = \
+	$(SRC_DIR)/client.c \
+	$(SRC_DIR)/network.c \
+	$(SRC_DIR)/framing.c \
+	$(SRC_DIR)/screen.c
 
 SERVER_BIN = $(BUILD_DIR)/server
 CLIENT_BIN = $(BUILD_DIR)/client
